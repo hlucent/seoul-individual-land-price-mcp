@@ -25,13 +25,16 @@ async def get_individual_land_price(
 
     법정동명/본번/부번/필지구분코드로 세부 필터링이 가능하다.
 
+    주의(실측 확인): bjdong_nm/bonbeon/bubeon/pilgi_cd는 넷 다 비우거나 넷 다 채워야 한다.
+    일부만 채우면 서울시 API가 ERROR-500(서버 오류)을 반환한다.
+
     Args:
         sigungu_nm: 시군구명 (필수), 예: "종로구"
         year: 기준년도 YYYY (필수), 예: "2020"
-        bjdong_nm: 법정동명 (선택, 기본값 "")
-        bonbeon: 본번 0~9999 (선택, 기본값 "")
-        bubeon: 부번 0~9999 (선택, 기본값 "")
-        pilgi_cd: 필지구분코드 1~9 (선택, 기본값 "").
+        bjdong_nm: 법정동명 (선택, 기본값 ""). 채우려면 bonbeon/bubeon/pilgi_cd도 함께 채워야 함
+        bonbeon: 본번 0~9999 (선택, 기본값 ""). 채우려면 bjdong_nm/bubeon/pilgi_cd도 함께 채워야 함
+        bubeon: 부번 0~9999 (선택, 기본값 ""). 채우려면 bjdong_nm/bonbeon/pilgi_cd도 함께 채워야 함
+        pilgi_cd: 필지구분코드 1~9 (선택, 기본값 ""). 채우려면 bjdong_nm/bonbeon/bubeon도 함께 채워야 함.
             1:토지, 2:임야, 3:가지번, 4:가지번(부분세분), 5:블럭지번,
             6:블럭지번(롯트세분), 7:블럭지번(지구), 8:블럭지번(지구-롯트), 9:기타지번
         start_index: 요청 시작 위치, 1부터 (기본값 1)

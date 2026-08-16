@@ -1,4 +1,6 @@
 import os
+from urllib.parse import quote
+
 import httpx
 
 BASE_URL = "http://openapi.seoul.go.kr:8088"
@@ -41,6 +43,23 @@ async def fetch_individual_land_price(
 ) -> dict:
     api_key = os.environ["SEOUL_API_KEY"]
 
+    # 실측 결과: 이 API는 BJDONG_NM/BONBEON/BUBEON/PILGI_CD를 빈 문자열로 비워두면
+    # ERROR-500(서버 오류)을 반환한다. 네 값을 모두 채우거나 모두 비워야 한다.
+    optional_params = {
+        "bjdong_nm": bjdong_nm,
+        "bonbeon": bonbeon,
+        "bubeon": bubeon,
+        "pilgi_cd": pilgi_cd,
+    }
+    filled = {k: v for k, v in optional_params.items() if v != ""}
+    if filled and len(filled) != len(optional_params):
+        missing = [k for k, v in optional_params.items() if v == ""]
+        raise SeoulApiError(
+            "ERROR-CLIENT-PARTIAL-PARAMS",
+            "bjdong_nm/bonbeon/bubeon/pilgi_cd는 모두 채우거나 모두 비워야 합니다 "
+            f"(비어 있는 값: {', '.join(missing)}). 일부만 채우면 서울시 API가 ERROR-500을 반환합니다.",
+        )
+
     path_parts = [
         api_key,
         "json",
@@ -54,7 +73,8 @@ async def fetch_individual_land_price(
         pilgi_cd,
         year,
     ]
-    url = BASE_URL + "/" + "/".join(path_parts)
+    encoded_parts = [quote(part, safe="") for part in path_parts]
+    url = BASE_URL + "/" + "/".join(encoded_parts)
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.get(url)
