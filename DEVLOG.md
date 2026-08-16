@@ -102,3 +102,20 @@
 - 문제 및 해결:
   - 문제: DEVPLAN.md가 가정한 "시군구+연도 기준 다건 조회 후 START/END로 페이징" 시나리오가 실제 API 동작과 다름.
   - 해결(보류): 코드 수정 없음 — `seoul_api.py`의 검증 로직은 이미 이 조합(부분/전체 빈 문자열)을 정상적으로 API까지 전달하고 있어 추가 수정 불필요. 근본적으로 이 API가 어떤 조합에서 다건을 반환하는지는 사용자가 알고 있는 실제 다건 존재 사례(예: 특정 법정동에 필지구분코드만 다르고 본번/부번이 같은 여러 필지가 있는 경우 등)를 제공받아야 추가 검증 가능. README.md/DEVPLAN.md의 "다건 페이징 가능" 서술은 이 실측 결과를 반영해 재검토가 필요할 수 있음.
+
+## 2026-08-16 (Rate Limiting 추가)
+- 진행 내용:
+  - 사용자 요청에 따라 3단계 rate limit을 `server.py`에 in-memory로 구현.
+    - 규칙 1: 같은 IP 기준 분당 3회 초과 시 429
+    - 규칙 2: 1시간 내 429를 5회 이상 받은 IP는 이후 24시간 차단
+    - 규칙 3: IP당 일일(rolling 24h) 총 호출 30회 초과 시 429
+  - 구현 방식: 최초에는 raw ASGI 미들웨어(`starlette`)로 접근했으나, FastMCP가 `fastmcp.server.middleware.Middleware` 베이스 클래스(`on_call_tool` 훅)와 `get_http_request()`(요청 컨텍스트에서 Starlette `Request` 획득)를 자체 제공하는 것을 확인하고 이를 사용하도록 재작성. 툴 호출(`tools/call`) 시점에 IP를 확인해 한도를 초과하면 `fastmcp.exceptions.ToolError`를 발생시켜 `429: ...` 메시지로 MCP 클라이언트에 오류가 전달되도록 함.
+  - 클라이언트 IP는 `X-Forwarded-For` 헤더(fly.io 프록시 경유 시) 우선, 없으면 `request.client.host`로 판별.
+  - 카운터는 `collections.deque` 기반 sliding window(분당/일일/1시간 429 카운트) + `threading.Lock`으로 스레드 안전성 확보.
+  - 로컬에서 `server.mcp._check_rate_limit(ip)`를 직접 호출하는 단위 테스트로 3개 규칙 모두 동작 확인(규칙1: 4번째 호출에서 차단, 규칙2: 429 5회 후 추가 요청이 차단 메시지로 응답, 규칙3: 40회 요청 중 30회만 통과·10회 429).
+- 확인 필요 / 실측 결과:
+  - ⚠️ in-memory 저장이므로 fly.io가 머신을 2대 이상 띄우면(기본 고가용성 설정) 머신별로 카운터가 분리되어 완전한 전역 제한이 아님 — CLAUDE.md 지침에 따라 in-memory로 충분하다고 판단해 별도 외부 저장소(Redis 등)는 추가하지 않음. README.md에 이 한계를 명시함.
+  - 실제 배포 환경(fly.io, 다중 IP, 실제 429 발생 시 클라이언트에 노출되는 메시지 형태)은 로컬 테스트만으로는 완전히 검증 불가 — 배포 후 사용자가 직접 확인 필요.
+- 문제 및 해결:
+  - 문제: 처음에는 raw ASGI 미들웨어로 구현을 시도했으나, FastMCP의 `mcp.run(transport="streamable-http", ...)` 호출 방식에서는 ASGI 앱을 직접 감싸는 지점이 명확하지 않아 FastMCP 자체 미들웨어 시스템(`add_middleware`)으로 전환.
+  - 해결: `Middleware.on_call_tool` 훅 사용으로 해결 — 툴 호출마다 실행되며 `get_http_request()`로 클라이언트 IP를 얻을 수 있음을 확인. 배포는 수행하지 않음(CLAUDE.md 지침에 따라 `flyctl deploy`는 사용자가 직접 실행).

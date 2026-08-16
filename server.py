@@ -1,13 +1,108 @@
 import os
+import time
+from collections import defaultdict, deque
+from threading import Lock
 
 from dotenv import load_dotenv
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
+from fastmcp.server.dependencies import get_http_request
+from fastmcp.server.middleware import Middleware, MiddlewareContext
 
 from seoul_api import fetch_individual_land_price, SeoulApiError
 
 load_dotenv()
 
 mcp = FastMCP("seoul-individual-land-price")
+
+
+# --- Rate limiting (in-memory, 단일 프로세스 기준) ---
+#
+# 규칙:
+#   1. 같은 IP 기준 분당 3회 초과 요청 시 429
+#   2. 1시간 내 429를 5회 이상 받은 IP는 이후 24시간 차단
+#   3. IP당 일일(rolling 24h) 총 호출 30회 초과 시 429
+#
+# fly.io는 머신을 여러 대 띄울 수 있어 프로세스 간 상태 공유가 안 되므로
+# 완벽한 전역 제한은 아니지만(CLAUDE.md 지침에 따라 in-memory로 충분), 단일 요청
+# 경로(MCP 툴 호출)에 대한 기본적인 남용 방지 목적으로는 충분하다.
+RATE_LIMIT_PER_MINUTE = 3
+RATE_LIMIT_WINDOW_SECONDS = 60
+BLOCK_THRESHOLD_429_COUNT = 5
+BLOCK_THRESHOLD_WINDOW_SECONDS = 3600
+BLOCK_DURATION_SECONDS = 24 * 3600
+DAILY_LIMIT = 30
+DAILY_WINDOW_SECONDS = 24 * 3600
+
+_lock = Lock()
+_minute_times: dict[str, deque] = defaultdict(deque)
+_daily_times: dict[str, deque] = defaultdict(deque)
+_429_times: dict[str, deque] = defaultdict(deque)
+_blocked_until: dict[str, float] = {}
+
+
+def _get_client_ip() -> str:
+    try:
+        request = get_http_request()
+    except RuntimeError:
+        return "unknown"
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    if request.client:
+        return request.client.host
+    return "unknown"
+
+
+def _record_429(ip: str, now: float) -> None:
+    """Must be called while holding _lock."""
+    times_429 = _429_times[ip]
+    while times_429 and now - times_429[0] > BLOCK_THRESHOLD_WINDOW_SECONDS:
+        times_429.popleft()
+    times_429.append(now)
+    if len(times_429) >= BLOCK_THRESHOLD_429_COUNT:
+        _blocked_until[ip] = now + BLOCK_DURATION_SECONDS
+
+
+def _check_rate_limit(ip: str) -> None:
+    """Raises ToolError (mapped to a 429-equivalent MCP error) if the ip is rate limited."""
+    now = time.monotonic()
+
+    with _lock:
+        blocked_until = _blocked_until.get(ip)
+        if blocked_until is not None:
+            if now < blocked_until:
+                raise ToolError("429: 반복적인 요청 한도 초과로 24시간 동안 차단되었습니다.")
+            del _blocked_until[ip]
+
+        minute_times = _minute_times[ip]
+        while minute_times and now - minute_times[0] > RATE_LIMIT_WINDOW_SECONDS:
+            minute_times.popleft()
+
+        daily_times = _daily_times[ip]
+        while daily_times and now - daily_times[0] > DAILY_WINDOW_SECONDS:
+            daily_times.popleft()
+
+        if len(minute_times) >= RATE_LIMIT_PER_MINUTE:
+            _record_429(ip, now)
+            raise ToolError("429: 요청 한도를 초과했습니다 (분당 3회 초과).")
+
+        if len(daily_times) >= DAILY_LIMIT:
+            _record_429(ip, now)
+            raise ToolError("429: 일일 요청 한도를 초과했습니다 (하루 30회 초과).")
+
+        minute_times.append(now)
+        daily_times.append(now)
+
+
+class RateLimitMiddleware(Middleware):
+    async def on_call_tool(self, context: MiddlewareContext, call_next):
+        ip = _get_client_ip()
+        _check_rate_limit(ip)
+        return await call_next(context)
+
+
+mcp.add_middleware(RateLimitMiddleware())
 
 
 @mcp.tool()
