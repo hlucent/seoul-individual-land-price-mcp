@@ -1,3 +1,7 @@
+> ⚠️ **서비스 종료 안내**
+> 본 MCP 서버는 2026-08-23부로 fly.io 배포를 종료했습니다.
+> 코드는 개발 참고용으로 저장소에 남겨둡니다.
+
 # 서울시 개별공시지가 정보 MCP
 
 서울 열린데이터광장의 [서울시 개별공시지가 정보(IndividuallyPostedLandPriceService)](http://data.seoul.go.kr/)를
